@@ -1,7 +1,9 @@
 """AI similarity search across historical projects.
 
-Primary: Databricks ai_similarity() SQL function.
-Fallback: scikit-learn TF-IDF + cosine similarity.
+Search priority ("auto" mode):
+  1. Vector Search  —  VECTOR_SEARCH() against vs_project_corpus_idx
+  2. ai_similarity  —  Databricks AI Functions SQL scalar
+  3. TF-IDF         —  scikit-learn fallback (no infra needed)
 """
 from __future__ import annotations
 
@@ -11,6 +13,10 @@ from typing import Tuple
 
 from utils.db import run_query, execute_statement
 from config import TABLE_INTAKES, TABLE_MATCHES
+
+# Vector Search index names (created by scripts/04_create_indexes.py)
+VS_CORPUS_INDEX = "dpm_dev.mlops.vs_project_corpus_idx"
+VS_INTAKE_INDEX = "dpm_dev.mlops.vs_project_intakes_idx"
 
 
 # ======================================================================
@@ -46,7 +52,31 @@ def build_search_text(
 
 
 # ======================================================================
-# Primary: Databricks ai_similarity()
+# Method 1 (preferred): Vector Search via SQL VECTOR_SEARCH()
+# ======================================================================
+def _search_vector(search_text: str, top_k: int) -> pd.DataFrame:
+    """Query the VS corpus index through the SQL warehouse."""
+    safe = search_text.replace("'", "''")[:8000]
+    query = f"""
+    SELECT
+        project_id   AS historical_project_id,
+        project_name AS historical_project_name,
+        ROUND(score * 100, 1) AS similarity_score,
+        line_of_business,
+        project_size AS estimated_complexity,
+        workitem_tags AS affected_systems
+    FROM VECTOR_SEARCH(
+        index => '{VS_CORPUS_INDEX}',
+        query => '{safe}',
+        num_results => {top_k}
+    )
+    WHERE project_id LIKE 'HIST-%%'
+    """
+    return run_query(query)
+
+
+# ======================================================================
+# Method 2: Databricks ai_similarity()
 # ======================================================================
 def _search_ai_similarity(search_text: str, top_k: int) -> pd.DataFrame:
     safe = search_text.replace("'", "''")[:4000]
@@ -130,15 +160,40 @@ def run_similarity_search(
     top_k: int = 5,
     method: str = "auto",
 ) -> Tuple[pd.DataFrame, str]:
-    """Run a similarity search; returns (matches_df, method_used)."""
-    if method in ("ai_similarity", "auto"):
+    """Run a similarity search; returns (matches_df, method_used).
+
+    Method priority for 'auto':
+      vector_search -> ai_similarity -> tfidf
+    """
+    attempts: list[tuple[str, callable]] = []
+
+    if method == "vector_search":
+        attempts = [("vector_search", lambda: _search_vector(search_text, top_k))]
+    elif method == "ai_similarity":
+        attempts = [("ai_similarity", lambda: _search_ai_similarity(search_text, top_k))]
+    elif method == "tfidf":
+        attempts = [("tfidf", lambda: _search_tfidf(search_text, top_k))]
+    else:  # auto
+        attempts = [
+            ("vector_search", lambda: _search_vector(search_text, top_k)),
+            ("ai_similarity", lambda: _search_ai_similarity(search_text, top_k)),
+            ("tfidf", lambda: _search_tfidf(search_text, top_k)),
+        ]
+
+    last_exc = None
+    for name, fn in attempts:
         try:
-            return _search_ai_similarity(search_text, top_k), "ai_similarity"
+            df = fn()
+            if not df.empty:
+                return df, name
         except Exception as exc:
-            if method == "ai_similarity":
+            last_exc = exc
+            if len(attempts) > 1:
+                st.info(f"{name} unavailable ({exc}); trying next method.")
+            else:
                 raise
-            st.info(f"ai_similarity unavailable ({exc}); falling back to TF-IDF.")
-    return _search_tfidf(search_text, top_k), "tfidf"
+    # All methods exhausted
+    return pd.DataFrame(), attempts[-1][0] if attempts else "none"
 
 
 # ======================================================================

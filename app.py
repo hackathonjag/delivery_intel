@@ -51,8 +51,8 @@ with st.sidebar:
     st.header("Search Settings")
     search_method = st.selectbox(
         "Similarity method",
-        ["auto", "ai_similarity", "tfidf"],
-        help="auto tries ai_similarity first, falls back to TF-IDF.",
+        ["auto", "vector_search", "ai_similarity", "tfidf"],
+        help="auto tries vector_search -> ai_similarity -> TF-IDF.",
     )
     top_k = st.slider("Top-K matches", min_value=3, max_value=10, value=5)
 
