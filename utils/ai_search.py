@@ -12,7 +12,7 @@ import streamlit as st
 from typing import Tuple
 
 from utils.db import run_query, execute_statement
-from config import TABLE_INTAKES, TABLE_MATCHES
+from config import TABLE_INTAKES, TABLE_MATCHES, TABLE_CORPUS
 
 # Vector Search index names (created by scripts/04_create_indexes.py)
 VS_CORPUS_INDEX = "dpm_dev.mlops.vs_project_corpus_idx"
@@ -80,6 +80,28 @@ def _search_vector(search_text: str, top_k: int) -> pd.DataFrame:
 # ======================================================================
 def _search_ai_similarity(search_text: str, top_k: int) -> pd.DataFrame:
     safe = search_text.replace("'", "''")[:4000]
+
+    # Try corpus table first (includes transcript + planview + tags)
+    try:
+        query = f"""
+        SELECT
+            project_id   AS historical_project_id,
+            project_name AS historical_project_name,
+            ROUND(ai_similarity('{safe}', search_text) * 100, 1)
+                         AS similarity_score,
+            workitem_tags AS affected_systems,
+            line_of_business,
+            project_size  AS estimated_complexity
+        FROM {TABLE_CORPUS}
+        WHERE project_id LIKE 'HIST-%%'
+        ORDER BY similarity_score DESC
+        LIMIT {top_k}
+        """
+        return run_query(query)
+    except Exception:
+        pass  # corpus table not yet created; fall back to intakes
+
+    # Fallback: project_intakes only (no transcript content)
     query = f"""
     WITH historical AS (
         SELECT
@@ -121,24 +143,44 @@ def _search_tfidf(search_text: str, top_k: int) -> pd.DataFrame:
     from sklearn.metrics.pairwise import cosine_similarity
     import numpy as np
 
-    query = f"""
-    SELECT
-        project_id   AS historical_project_id,
-        project_name AS historical_project_name,
-        CONCAT_WS(' ',
-            problem_statement_and_desired_outcome,
-            overall_scope, affected_systems,
-            request_category, estimated_complexity,
-            line_of_business, business_strategy,
-            known_business_risks
-        ) AS project_text,
-        affected_systems,
-        line_of_business,
-        estimated_complexity
-    FROM {TABLE_INTAKES}
-    WHERE project_id LIKE 'HIST-%%'
-    """
-    df = run_query(query)
+    # Try corpus table first (includes transcript + planview + tags)
+    try:
+        query = f"""
+        SELECT
+            project_id   AS historical_project_id,
+            project_name AS historical_project_name,
+            search_text  AS project_text,
+            workitem_tags AS affected_systems,
+            line_of_business,
+            project_size  AS estimated_complexity
+        FROM {TABLE_CORPUS}
+        WHERE project_id LIKE 'HIST-%%'
+        """
+        df = run_query(query)
+    except Exception:
+        df = pd.DataFrame()  # corpus not available
+
+    # Fallback: project_intakes only
+    if df.empty:
+        query = f"""
+        SELECT
+            project_id   AS historical_project_id,
+            project_name AS historical_project_name,
+            CONCAT_WS(' ',
+                problem_statement_and_desired_outcome,
+                overall_scope, affected_systems,
+                request_category, estimated_complexity,
+                line_of_business, business_strategy,
+                known_business_risks
+            ) AS project_text,
+            affected_systems,
+            line_of_business,
+            estimated_complexity
+        FROM {TABLE_INTAKES}
+        WHERE project_id LIKE 'HIST-%%'
+        """
+        df = run_query(query)
+
     if df.empty:
         return df
 

@@ -29,6 +29,7 @@ TABLE_PLANVIEW = _fqn("planview_odata_project_dimension")
 TABLE_ASSIGNMENTS = _fqn("project_resource_assignments")
 TABLE_APPROVALS = _fqn("project_approval_dependencies")
 TABLE_CAPACITY = _fqn("workforce_capacity_weekly")
+TABLE_CORPUS = _fqn("project_search_corpus")
 
 # RAM transcripts UC Volume
 TRANSCRIPT_VOLUME = (
