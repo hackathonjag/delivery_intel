@@ -1,0 +1,9 @@
+command:
+  - streamlit
+  - run
+  - app.py
+  - --server.port
+  - "8501"
+env:
+  - name: DATABRICKS_HTTP_PATH
+    value: /sql/1.0/warehouses/902ba628be17bac8
